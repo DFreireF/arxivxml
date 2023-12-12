@@ -17,9 +17,14 @@ def publicationReference(config_path):
 def generate_xml_from_ods(file_path, config_path):
     # Read .ods file
     df = pd.read_excel(file_path, engine='odf')
-
+    df = df.sort_values(by=df.columns[9]) # sort the order
     # Extract unique affiliations
-    affiliations = set(df.iloc[:, 5:8].fillna('').values.flatten()) - {''}
+    ordered_affiliations = []
+    for _, row in df.iterrows():
+        ordered_affiliations.extend(row[5:8].dropna().tolist())
+    # Remove duplicate affiliations while preserving order
+    seen = set()
+    affiliations = [x for x in ordered_affiliations if not (x in seen or seen.add(x))]
 
     # XML root
     root = etree.Element("collaborationauthorlist", nsmap={
@@ -29,15 +34,21 @@ def generate_xml_from_ods(file_path, config_path):
 
     # Creation date
     creation_date = etree.SubElement(root, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}creationDate")
-    creation_date.text = datetime.now().strftime("%Y-%m-%d")
+    creation_date.text = datetime.now().strftime("%Y-%m-%d_%H:%M")
 
     # Publication reference
     pub_ref = etree.SubElement(root, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}publicationReference")
     pub_ref.text = publicationReference(config_path)
 
+    # Collaboration
+    collaborations = etree.SubElement(root, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}collaborations")
+    collaboration = etree.SubElement(collaborations, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}collaboration", id="c1")
+    etree.SubElement(collaboration, "{http://xmlns.com/foaf/0.1/}name").text = "E143"
+    etree.SubElement(collaboration, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}experimentNumber").text = "E143"
+
     # Organizations
     organizations = etree.SubElement(root, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}organizations")
-    for idx, aff in enumerate(sorted(affiliations), 1):
+    for idx, aff in enumerate(affiliations, 1):
         org = etree.SubElement(organizations, "{http://xmlns.com/foaf/0.1/}Organization", id=f"a{idx}")
         etree.SubElement(org, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}orgDomain").text = "http://"
         etree.SubElement(org, "{http://xmlns.com/foaf/0.1/}name").text = aff
@@ -49,36 +60,57 @@ def generate_xml_from_ods(file_path, config_path):
         person = etree.SubElement(authors, "{http://xmlns.com/foaf/0.1/}Person")
         etree.SubElement(person, "{http://xmlns.com/foaf/0.1/}givenName").text = row[0]  # First name
         etree.SubElement(person, "{http://xmlns.com/foaf/0.1/}familyName").text = row[2]  # Last name
+        # authorNamePaper
+        authorNamePaper = f"{row[1]} {row[2]}"  # First Abb. + Last name
+        etree.SubElement(person, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorNamePaper").text = authorNamePaper
+
+        # authorCollaboration
+        authorCollab = etree.SubElement(person, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorCollaboration", collaborationid="c1")
+        
+        # Affiliations
+        author_affiliations = etree.SubElement(person, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorAffiliations")
+        for aff in row[5:8].dropna():
+            idx = affiliations.index(aff) + 1
+            etree.SubElement(author_affiliations, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorAffiliation", organizationid=f"a{idx}")
+        
         # ORCID if available
         if pd.notna(row[4]):
             author_ids = etree.SubElement(person, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorids")
             author_id = etree.SubElement(author_ids, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorid", source="ORCID")
             author_id.text = row[4]
-        # Affiliations
-        author_affiliations = etree.SubElement(person, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorAffiliations")
-        for aff in row[5:8].dropna():
-            idx = sorted(affiliations).index(aff) + 1
-            etree.SubElement(author_affiliations, "{http://inspirehep.net/info/HepNames/tools/authors_xml/}authorAffiliation", organizationid=f"a{idx}")
+        
 
     # Return XML string
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
 
+def validate_xml(xml_content, dtd_file_path):
+    try:
+        dtd = etree.DTD(file=dtd_file_path)
+        root = etree.XML(xml_content.encode('utf-8')) 
+        if dtd.validate(root):
+            print("XML file is valid according to the DTD.")
+        else:
+            print("XML file is invalid according to the DTD.")
+            print(dtd.error_log.filter_from_errors()[0])
+    except Exception as e:
+        print(f"An error occurred during validation: {e}")
+
 def main():
     # Create argument parser
     parser = argparse.ArgumentParser(description="Generate XML from ODS file containing author list.")
-    parser.add_argument("file_path", type=str, help="Path to the .ods file containing the author list")
-    parser.add_argument("--toml", type=str, help="Path to the toml file containing the publication reference")
-
+    parser.add_argument("--ods", type=str, help="Path to the .ods file containing the author list")
+    parser.add_argument("--toml", type=str, help="Path to the .toml file containing the publication reference")
+    parser.add_argument("--dtd", type=str, help="Path to the .dtd file containing the validator")
 
     # Parse arguments
     args = parser.parse_args()
 
     # Generate XML content from .ods file
-    xml_content = generate_xml_from_ods(args.file_path, args.toml)
-
+    xml_content = generate_xml_from_ods(args.ods, args.toml)
     # Output the XML content
     with open("authors.xml", "w", encoding="UTF-8") as file:
         file.write(xml_content)
 
+    validate_xml(xml_content, args.dtd)
 if __name__ == "__main__":
     main()
